@@ -1,65 +1,88 @@
 # agent-stack
 
-**ACP protocol + `omp acp` agent stack.** Powers AI-native editor UIs — integrates with [Terax AI](https://github.com/crynta/terax-ai) and custom frontends.
+**ACP protocol + `omp acp` agent backend.** Powers AI-native editors via `omp acp`.
 
-| Layer               | Status                                                          |
-| ------------------- | --------------------------------------------------------------- |
-| Rust backend        | ✅ `cargo check` — 0 errors                                     |
-| TypeScript frontend | ✅ `tsc --noEmit` — 0 errors                                    |
-| ACP `omp acp`       | ✅ `initialize` → `session/new` → `session/prompt` → streaming  |
-| Model routing       | ✅ DeepSeek V4 Pro / Flash / Qwen via `~/.omp/agent/models.yml` |
+| Layer               | Technology                             | Status      |
+| ------------------- | -------------------------------------- | ----------- |
+| **Protocol**        | ACP (JSON-RPC 2.0 over stdio)          | ✅ Stable   |
+| **Agent backend**   | `omp acp` — model routing, auth, MCP   | ✅ Live     |
+| **Editor frontend** | [Zed](https://zed.dev) via HTTP bridge | ✅ Working  |
+| ~~Legacy frontend~~ | ~~Terax AI (Tauri/Rust)~~              | ➡️ Archived |
 
 ## Architecture
 
 ```
-┌──────────────────────────────────────────────────────────────────┐
-│  Terax AI Frontend                                               │
-│  ┌────────────────────────────────────────────────────────────┐  │
-│  │  Provider: "acp" │ Model: "acp-agent"                      │  │
-│  │                                                             │  │
-│  │  agent.ts → invoke("acp_initialize")                        │  │
-│  │          → invoke("acp_send", "session/new")                │  │
-│  │          → invoke("acp_send_stream", {sessionId, text,     │  │
-│  │                                on_event: Channel})          │  │
-│  │                                     │                       │  │
-│  │  Channel<AcpStreamEvent> ◄──────────┘                       │  │
-│  │    Chunk {text} ← session/update (streaming)                │  │
-│  │    End          ← final response                            │  │
-│  │    Error {msg}  ← on failure                                │  │
-│  └──────────────────┬─────────────────────────────────────────┘  │
-│                     │ Tauri IPC invoke                            │
-├─────────────────────┼────────────────────────────────────────────┤
-│  Rust Backend       │                                            │
-│  ┌──────────────────▼─────────────────────────────────────────┐  │
-│  │  acp.rs                                                    │  │
-│  │  acp_initialize → spawn "omp acp", send initialize         │  │
-│  │  acp_send       → write stdin, read stdout (request/response)│  │
-│  │  acp_send_stream → write stdin, stream stdout line-by-line  │  │
-│  │                    forward session/update as Chunk events    │  │
-│  │  acp_dispose    → kill process                              │  │
-│  └──────────────────┬─────────────────────────────────────────┘  │
-│                     │ stdio (pipe)                                │
-├─────────────────────┼────────────────────────────────────────────┤
-│  System             │                                            │
-│  ┌──────────────────▼─────────────────────────────────────────┐  │
-│  │  omp acp (Agent Communication Protocol)                     │  │
-│  │  initialize → session/new → session/prompt                  │  │
-│  │  ← streaming session/update (agent_message_chunk)           │  │
-│  │  ← final response (stopReason: end_turn)                    │  │
-│  └────────────────────────────────────────────────────────────┘  │
-│                                                                   │
-│  ┌────────────────────────────────────────────────────────────┐  │
-│  │  ~/.omp/agent/models.yml                                   │  │
-│  │  default: opencode-go/deepseek-v4-pro                      │  │
-│  │  smol/plan: opencode-zen/deepseek-v4-flash-free            │  │
-│  │  commit: opencode-go/qwen-3.6-plus                         │  │
-│  └────────────────────────────────────────────────────────────┘  │
-└──────────────────────────────────────────────────────────────────┘
+Zed (or any OpenAI-compatible client)
+  │  POST /v1/chat/completions (HTTP/SSE)
+  ▼
+omp-acp-bridge    ← this repo
+  │  ACP (stdin/stdout JSON-RPC)
+  ▼
+omp acp           ← agent backend
+  │  model routing, auth, tool execution
+  ▼
+Model API (DeepSeek, Anthropic, local, etc.)
 ```
 
-## ACP Protocol (JSON-RPC 2.0 over stdio)
+## Quick Start
+
+### 1. Install `omp`
+
+```bash
+npm install -g @oh-my-pi/pi-coding-agent
+# or: bun install -g @oh-my-pi/pi-coding-agent
+```
+
+### 2. Configure models
+
+Create `~/.omp/agent/models.yml`:
+
+```yaml
+modelRoles:
+  default: opencode-go/deepseek-v4-pro
+  smol: opencode-zen/deepseek-v4-flash-free
+  slow: opencode-go/deepseek-v4-pro
+  plan: opencode-zen/deepseek-v4-flash-free
+  commit: opencode-go/qwen-3.6-plus
+```
+
+Set your API key:
+
+```bash
+export DEEPSEEK_API_KEY=sk-...   # or whatever your provider needs
+```
+
+### 3. Start the bridge
+
+```bash
+node omp-acp-bridge/bridge.mjs
+# Listening on http://127.0.0.1:7654
+```
+
+### 4. Connect Zed
+
+In Zed `settings.json`:
 
 ```json
+{
+  "assistant": {
+    "provider": "open_ai",
+    "model": "acp-agent",
+    "open_ai": {
+      "api_url": "http://localhost:7654/v1/chat/completions",
+      "api_key": "any-value-works"
+    }
+  }
+}
+```
+
+## How It Works
+
+### ACP Protocol (stdin/stdout)
+
+JSON-RPC 2.0 messages over stdin/stdout:
+
+```
 → {"jsonrpc":"2.0","method":"initialize","params":{"protocolVersion":1},"id":1}
 ← {"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1,"agentInfo":{...}}}
 
@@ -68,64 +91,22 @@
 
 → {"jsonrpc":"2.0","method":"session/prompt","params":{"sessionId":"...","prompt":[{"type":"text","text":"message"}]},"id":3}
 ← {"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"...","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"chunk"}}}}
-← {"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"...","update":{"sessionUpdate":"agent_thought_chunk","content":{"type":"text","text":"...thinking..."}}}}
 ← {"jsonrpc":"2.0","id":3,"result":{"stopReason":"end_turn"}}
 ```
 
-## Terax AI Integration
+### Bridge Layer
 
-### Rust Backend (`src-tauri/src/modules/acp.rs`)
+`omp-acp-bridge` translates OpenAI-compatible HTTP requests into ACP protocol:
 
-| Command           | Type             | Description                                                                                                                 |
-| ----------------- | ---------------- | --------------------------------------------------------------------------------------------------------------------------- |
-| `acp_initialize`  | Request/Response | Spawns `omp acp`, sends `initialize`, returns agent info                                                                    |
-| `acp_send`        | Request/Response | Generic JSON-RPC (used for `session/new`, etc.)                                                                             |
-| `acp_send_stream` | **Streaming**    | Sends `session/prompt`, reads stdout line-by-line, forwards `session/update` as `AcpStreamEvent::Chunk` via Tauri `Channel` |
-| `acp_dispose`     | Fire-and-forget  | Kills the ACP process                                                                                                       |
+| OpenAI (HTTP)                         | ACP (stdio)                       |
+| ------------------------------------- | --------------------------------- |
+| `POST /v1/chat/completions`           | `session/prompt`                  |
+| `{"messages": [...], "stream": true}` | streaming `session/update` events |
+| SSE `data: {...}` chunks              | `agent_message_chunk` content     |
+| `data: [DONE]`                        | `stopReason: "end_turn"`          |
 
-### Frontend (`src/modules/ai/`)
+## Related
 
-| File                      | Change                                                                                                   |
-| ------------------------- | -------------------------------------------------------------------------------------------------------- |
-| `config.ts`               | Added `"acp"` ProviderId, provider info, `acp-agent` model, keyless, context limit                       |
-| `agent.ts`                | Added `case "acp"` — creates `Channel<AcpStreamEvent>`, pipes chunks into Vercel AI SDK `ReadableStream` |
-| `keyring.ts`              | Added `acp: null` to default keys                                                                        |
-| `ProviderIcon.tsx`        | Added ACP icon                                                                                           |
-| `AiStatusBarControls.tsx` | Added ACP icon                                                                                           |
-
-## Prerequisites
-
-```bash
-# Install omp (agent runtime) — requires bun
-curl -fsSL https://bun.sh/install | bash
-bun install -g @oh-my-pi/pi-coding-agent
-
-# Model routing config
-mkdir -p ~/.omp/agent
-```
-
-## Quick Test
-
-```bash
-# Verify ACP works standalone
-echo '{"jsonrpc":"2.0","method":"initialize","params":{"protocolVersion":1},"id":1}' | omp acp
-# → {"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1,...}}
-```
-
-## Build & Run
-
-```bash
-cd terax-ai   # clone from github.com/crynta/terax-ai
-pnpm install
-cd src-tauri && cargo check      # 0 errors
-cd .. && pnpm tauri dev           # launch
-# Settings → AI → select "ACP Agent"
-```
-
-## Related Repos
-
-| Repo                                                             | What                                                                      |
-| ---------------------------------------------------------------- | ------------------------------------------------------------------------- |
-| **agent-stack** ← you are here                                   | ACP protocol + omp acp integration                                        |
-| [agent-ui-vscodium](https://github.com/B67687/agent-ui-vscodium) | Previous iteration: VSCodium fork with native Agent Panel + Inline Prompt |
-| [agentic-workflows](https://github.com/B67687/agentic-workflows) | Orchestration harness, session archive, agent memory                      |
+- [agent-ui-vscodium](https://github.com/B67687/agent-ui-vscodium) — VSCodium fork (legacy, archived approach)
+- [omp](https://www.npmjs.com/package/@oh-my-pi/pi-coding-agent) — the agent CLI
+- [Zed](https://zed.dev) — recommended editor frontend

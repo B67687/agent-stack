@@ -1,0 +1,13 @@
+{
+  "name": "omp-acp-bridge",
+  "version": "0.1.0",
+  "description": "OpenAI-compatible HTTP proxy for omp acp",
+  "main": "bridge.mjs",
+  "bin": {
+    "omp-acp-bridge": "bridge.mjs"
+  },
+  "scripts": {
+    "start": "node bridge.mjs",
+    "start:win": "start /B node bridge.mjs"
+  }
+}
