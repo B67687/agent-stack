@@ -107,6 +107,6 @@ JSON-RPC 2.0 messages over stdin/stdout:
 
 ## Related
 
-- [agent-ui-vscodium](https://github.com/B67687/agent-ui-vscodium) — VSCodium fork (legacy, archived approach)
 - [omp](https://www.npmjs.com/package/@oh-my-pi/pi-coding-agent) — the agent CLI
 - [Zed](https://zed.dev) — recommended editor frontend
+- [agent-ui-vscodium](https://github.com/B67687/agent-ui-vscodium) — VSCodium fork (legacy, archived)
